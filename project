@@ -1,0 +1,319 @@
+
+-- ============================================
+-- URBAN SMART PARKING AND SLOT ALLOCATION SYSTEM
+-- Database Management System Project
+-- Language: MySQL
+-- ============================================
+
+-- 1. CREATE DATABASE
+
+DROP DATABASE IF EXISTS SmartParkingDB;
+
+CREATE DATABASE SmartParkingDB;
+
+USE SmartParkingDB;
+
+
+-- 2. CREATE PARKING SLOT TABLE
+
+CREATE TABLE ParkingSlot (
+    SlotID INT PRIMARY KEY AUTO_INCREMENT,
+    SlotNumber VARCHAR(10) UNIQUE NOT NULL,
+    SlotType VARCHAR(20) NOT NULL,
+    Status VARCHAR(20) DEFAULT 'Available'
+);
+
+
+-- 3. CREATE VEHICLE TABLE
+
+CREATE TABLE Vehicle (
+    VehicleID INT PRIMARY KEY AUTO_INCREMENT,
+    OwnerName VARCHAR(50) NOT NULL,
+    VehicleNumber VARCHAR(20) UNIQUE NOT NULL,
+    VehicleType VARCHAR(20) NOT NULL
+);
+
+
+-- 4. CREATE PARKING BOOKING TABLE
+
+CREATE TABLE ParkingBooking (
+    BookingID INT PRIMARY KEY AUTO_INCREMENT,
+    VehicleID INT NOT NULL,
+    SlotID INT NOT NULL,
+    EntryTime DATETIME NOT NULL,
+    ExitTime DATETIME DEFAULT NULL,
+    Amount DECIMAL(10,2) DEFAULT 0.00,
+    BookingStatus VARCHAR(20) DEFAULT 'Active',
+
+    FOREIGN KEY (VehicleID)
+        REFERENCES Vehicle(VehicleID),
+
+    FOREIGN KEY (SlotID)
+        REFERENCES ParkingSlot(SlotID)
+);
+
+
+-- 5. INSERT PARKING SLOTS
+
+INSERT INTO ParkingSlot (SlotNumber, SlotType)
+VALUES
+('A01', 'Car'),
+('A02', 'Car'),
+('A03', 'Car'),
+('A04', 'Car'),
+('B01', 'Bike'),
+('B02', 'Bike'),
+('B03', 'Bike'),
+('B04', 'Bike');
+
+
+-- 6. INSERT SAMPLE VEHICLES
+
+INSERT INTO Vehicle
+(OwnerName, VehicleNumber, VehicleType)
+VALUES
+('Anika Sharma', 'PB10AB1234', 'Car'),
+('Rahul Sharma', 'PB10CD5678', 'Bike'),
+('Aman Verma', 'PB10EF9012', 'Car');
+
+
+-- 7. DISPLAY ALL PARKING SLOTS
+
+SELECT * FROM ParkingSlot;
+
+
+-- 8. DISPLAY ALL REGISTERED VEHICLES
+
+SELECT * FROM Vehicle;
+
+
+-- 9. DISPLAY AVAILABLE PARKING SLOTS
+
+SELECT *
+FROM ParkingSlot
+WHERE Status = 'Available';
+
+
+-- 10. REGISTER A NEW VEHICLE
+
+INSERT INTO Vehicle
+(OwnerName, VehicleNumber, VehicleType)
+VALUES
+('Simran Kaur', 'PB10GH4567', 'Car');
+
+
+-- 11. AUTOMATIC SLOT ALLOCATION
+-- Allocate the first available compatible slot
+-- to a vehicle using a stored procedure.
+
+DELIMITER //
+
+CREATE PROCEDURE AllocateParking(
+    IN p_VehicleID INT
+)
+BEGIN
+    DECLARE v_SlotID INT DEFAULT NULL;
+    DECLARE v_VehicleType VARCHAR(20);
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    SELECT VehicleType
+    INTO v_VehicleType
+    FROM Vehicle
+    WHERE VehicleID = p_VehicleID;
+
+    SELECT SlotID
+    INTO v_SlotID
+    FROM ParkingSlot
+    WHERE SlotType = v_VehicleType
+      AND Status = 'Available'
+    ORDER BY SlotID
+    LIMIT 1
+    FOR UPDATE;
+
+    IF v_SlotID IS NULL THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'No parking slot available';
+    END IF;
+
+    INSERT INTO ParkingBooking
+    (VehicleID, SlotID, EntryTime, BookingStatus)
+    VALUES
+    (p_VehicleID, v_SlotID, NOW(), 'Active');
+
+    UPDATE ParkingSlot
+    SET Status = 'Occupied'
+    WHERE SlotID = v_SlotID;
+
+    COMMIT;
+
+    SELECT
+        'Parking slot allocated successfully' AS Message,
+        v_SlotID AS AllocatedSlotID;
+
+END //
+
+DELIMITER ;
+
+
+-- 12. CALL ALLOCATION PROCEDURE
+-- Example: Allocate slot to VehicleID 1
+
+CALL AllocateParking(1);
+
+
+-- 13. DISPLAY ACTIVE BOOKINGS
+
+SELECT
+    B.BookingID,
+    V.OwnerName,
+    V.VehicleNumber,
+    P.SlotNumber,
+    B.EntryTime,
+    B.BookingStatus
+FROM ParkingBooking B
+JOIN Vehicle V
+    ON B.VehicleID = V.VehicleID
+JOIN ParkingSlot P
+    ON B.SlotID = P.SlotID
+WHERE B.BookingStatus = 'Active';
+
+
+-- 14. VEHICLE EXIT AND FEE CALCULATION
+-- Parking rate = Rs. 30 per started hour.
+
+DELIMITER //
+
+CREATE PROCEDURE VehicleExit(
+    IN p_BookingID INT
+)
+BEGIN
+    DECLARE v_SlotID INT;
+    DECLARE v_EntryTime DATETIME;
+    DECLARE v_Amount DECIMAL(10,2);
+
+    DECLARE EXIT HANDLER FOR SQLEXCEPTION
+    BEGIN
+        ROLLBACK;
+        RESIGNAL;
+    END;
+
+    START TRANSACTION;
+
+    SELECT SlotID, EntryTime
+    INTO v_SlotID, v_EntryTime
+    FROM ParkingBooking
+    WHERE BookingID = p_BookingID
+      AND BookingStatus = 'Active'
+    FOR UPDATE;
+
+    SET v_Amount =
+        CEIL(TIMESTAMPDIFF(
+            MINUTE, v_EntryTime, NOW()
+        ) / 60.0) * 30;
+
+    UPDATE ParkingBooking
+    SET ExitTime = NOW(),
+        Amount = v_Amount,
+        BookingStatus = 'Completed'
+    WHERE BookingID = p_BookingID;
+
+    UPDATE ParkingSlot
+    SET Status = 'Available'
+    WHERE SlotID = v_SlotID;
+
+    COMMIT;
+
+    SELECT
+        'Vehicle exit completed' AS Message,
+        v_Amount AS ParkingFee;
+
+END //
+
+DELIMITER ;
+
+
+-- 15. CALL VEHICLE EXIT PROCEDURE
+-- Example: Complete BookingID 1
+
+CALL VehicleExit(1);
+
+
+-- 16. DISPLAY PARKING HISTORY
+
+SELECT
+    B.BookingID,
+    V.OwnerName,
+    V.VehicleNumber,
+    P.SlotNumber,
+    B.EntryTime,
+    B.ExitTime,
+    B.Amount,
+    B.BookingStatus
+FROM ParkingBooking B
+JOIN Vehicle V
+    ON B.VehicleID = V.VehicleID
+JOIN ParkingSlot P
+    ON B.SlotID = P.SlotID;
+
+
+-- 17. SEARCH VEHICLE DETAILS
+
+SELECT *
+FROM Vehicle
+WHERE VehicleNumber = 'PB10AB1234';
+
+
+-- 18. COUNT AVAILABLE SLOTS
+
+SELECT COUNT(*) AS AvailableSlots
+FROM ParkingSlot
+WHERE Status = 'Available';
+
+
+-- 19. COUNT OCCUPIED SLOTS
+
+SELECT COUNT(*) AS OccupiedSlots
+FROM ParkingSlot
+WHERE Status = 'Occupied';
+
+
+-- 20. CALCULATE TOTAL PARKING REVENUE
+
+SELECT
+COALESCE(SUM(Amount), 0) AS TotalRevenue
+FROM ParkingBooking
+WHERE BookingStatus = 'Completed';
+
+
+-- 21. FINAL PARKING DASHBOARD
+
+SELECT
+    COUNT(*) AS TotalSlots,
+    SUM(Status = 'Available') AS AvailableSlots,
+    SUM(Status = 'Occupied') AS OccupiedSlots
+FROM ParkingSlot;
+
+
+-- 22. DISPLAY VEHICLE-WISE BOOKING DETAILS
+
+SELECT
+    V.OwnerName,
+    V.VehicleNumber,
+    COUNT(B.BookingID) AS TotalBookings,
+    COALESCE(SUM(B.Amount), 0) AS TotalAmount
+FROM Vehicle V
+LEFT JOIN ParkingBooking B
+    ON V.VehicleID = B.VehicleID
+GROUP BY V.VehicleID, V.OwnerName, V.VehicleNumber;
+
+
+-- ============================================
+-- END OF URBAN SMART PARKING SYSTEM
+-- ============================================
